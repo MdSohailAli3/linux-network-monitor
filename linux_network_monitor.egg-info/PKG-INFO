@@ -1,0 +1,173 @@
+Metadata-Version: 2.4
+Name: linux-network-monitor
+Version: 1.0.0
+Summary: A lightweight Linux TCP connectivity monitoring CLI
+Author: Linux Network Monitoring Project
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Provides-Extra: test
+Requires-Dist: pytest>=8.0; extra == "test"
+Dynamic: license-file
+
+# Linux Network Monitoring Tool (`netwatch`)
+
+A lightweight Linux command-line tool for checking TCP connectivity to configured hosts and ports, measuring TCP connection-establishment latency, recording results in CSV, and producing a summary report. It uses Python's standard-library socket API and requires no root privileges, raw sockets, packet capture, or frontend framework.
+
+> Only monitor endpoints you own or are authorized to test. The sample public endpoints are examples and are not guaranteed to be reachable from every network.
+
+## Features
+
+- Single TCP check and continuous multi-target monitoring.
+- DNS errors, connection timeouts, refused connections, and other socket errors reported separately.
+- Latency measured with `time.monotonic()` in milliseconds.
+- UTC timestamps and CSV logging.
+- Summary totals, success rate, and min/max/average latency for successful connections.
+- SIGINT/SIGTERM-aware shutdown; sockets are closed by context managers.
+- JSON configuration validation and automated tests that do not require internet access.
+
+Latency is the time required to establish a TCP connection. It is **not** ICMP ping latency and does not measure the time an application takes to respond after the connection is established.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    CLI[CLI: cli.py] --> CFG[Config loader: config.py]
+    CLI --> MON[Monitor loop: monitor.py]
+    CLI --> NET[TCP check: network.py]
+    MON --> NET
+    NET --> MODEL[Result model: models.py]
+    MON --> LOG[CSV logger: logger.py]
+    CLI --> REP[Report generator: reports.py]
+    LOG --> CSV[(CSV log)]
+    CSV --> REP
+```
+
+- `models.py`: immutable `Target` and `CheckResult` data structures.
+- `network.py`: DNS resolution, timed TCP connect, and error classification.
+- `config.py`: JSON parsing and validation before monitoring starts.
+- `monitor.py`: repeated checks, CSV writes, and cooperative stop handling.
+- `logger.py`: append-only CSV output with a single header.
+- `reports.py`: log validation, aggregate calculations, and terminal formatting.
+- `cli.py` / `__main__.py`: command parsing, exit codes, and executable module entry point.
+
+## Requirements and installation (Fedora / Ubuntu)
+
+Python 3.10 or newer is required. No third-party runtime package is needed; pytest is used for tests.
+
+```bash
+git clone <your-repository-url>
+cd linux-network-monitor
+./scripts/setup.sh
+source .venv/bin/activate
+```
+
+If you already have the project directory, skip `git clone`. The setup script creates `.venv`, installs the project in editable mode, and installs pytest. It does not use `sudo` or modify the system Python installation.
+
+## Usage
+
+Run commands from the project root after setup, using `.venv/bin/python` or an activated virtual environment.
+
+### One check
+
+```bash
+python -m netwatch check --host example.com --port 443
+python -m netwatch check --host example.com --port 443 --timeout 2
+python -m netwatch check --host example.com --port 443 --log data/monitoring.csv
+```
+
+A successful check exits with code `0`; a network check failure exits with code `1`; invalid arguments/configuration or a missing/invalid report file exits with code `2`.
+
+### Continuous monitoring
+
+```bash
+python -m netwatch monitor --config config/targets.example.json --interval 10
+python -m netwatch monitor --config config/targets.example.json --interval 5 --log data/lab.csv
+```
+
+Stop with `Ctrl+C`. The monitor finishes its current check, writes the result, and stops at the next loop boundary. SIGTERM is also handled. Each target is checked sequentially, so a cycle may take longer than the configured interval if checks themselves take time.
+
+The sample JSON format:
+
+```json
+{
+  "timeout": 3,
+  "targets": [
+    {"host": "example.com", "port": 443},
+    {"host": "1.1.1.1", "port": 53, "timeout": 2}
+  ]
+}
+```
+
+Each target requires a non-empty `host` and integer `port` in the range 1–65535. `timeout` is optional and must be positive; a target-level timeout overrides the top-level default.
+
+### Generate a report
+
+```bash
+python -m netwatch report --log data/monitoring.csv
+```
+
+Example output (illustrative; values depend on actual checks):
+
+```text
+Network Monitoring Summary
+--------------------------
+Total attempts : 6
+Successes      : 5
+Failures       : 1
+Success rate   : 83.33%
+Latency min    : 12.400 ms
+Latency max    : 30.100 ms
+Latency avg    : 18.620 ms
+```
+
+If there are no successful connections, latency fields are reported as unavailable rather than causing a division-by-zero error.
+
+### Convenience script
+
+```bash
+./scripts/run_monitor.sh
+INTERVAL=5 LOG_FILE=data/lab.csv ./scripts/run_monitor.sh
+```
+
+The script expects `.venv` to exist and uses the sample configuration. Edit or copy that configuration for your own authorized endpoints.
+
+## Testing
+
+```bash
+python -m pytest -v
+```
+
+Tests include a loopback TCP server for a successful integration check and mocks for DNS failure, timeout, and refusal. Configuration validation, CSV logging, report aggregation, CLI validation, and monitor cycles are also tested. The tests do not depend on public internet access.
+
+## Linux process and log inspection
+
+Start monitoring in a terminal, then in another terminal:
+
+```bash
+pgrep -af 'netwatch monitor'
+ps -ef | grep '[n]etwatch monitor'
+kill -TERM <PID>
+tail -f data/monitoring.csv
+ls -l data/monitoring.csv
+```
+
+Use the PID shown by `pgrep`/`ps`; replace `<PID>` with the actual process ID. `kill -TERM` requests graceful shutdown. Avoid `kill -9` unless normal termination has failed, because SIGKILL cannot be handled and bypasses cleanup logic.
+
+- The `.venv` directory isolates project dependencies from system Python.
+- The setup script is executable so it can be run as `./scripts/setup.sh`; no root permissions are required.
+- CSV files are created with the current user's permissions. Do not put secrets in target names or error messages; this tool does not need credentials.
+- A user-level systemd unit can be added later if service supervision is needed; it is intentionally not installed or enabled automatically.
+
+## Design notes and limitations
+
+- TCP connect checks establish a connection only; they do not validate TLS certificates or application health.
+- DNS resolution uses `socket.getaddrinfo`; the configured timeout applies to connection establishment, not necessarily to system resolver behavior.
+- Targets are checked sequentially to keep resource use bounded and predictable.
+- CSV is append-only and intended for a small, lightweight monitor. SQLite rotation/retention and parallel checks are possible future enhancements.
+- A hostname resolving to multiple addresses is represented by the first address returned by the system resolver; the connection itself is made using the hostname so normal OS address selection applies.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

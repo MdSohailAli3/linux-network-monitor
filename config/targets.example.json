@@ -1,0 +1,8 @@
+{
+  "timeout": 3,
+  "targets": [
+    {"host": "example.com", "port": 443},
+    {"host": "1.1.1.1", "port": 53, "timeout": 2},
+    {"host": "www.python.org", "port": 443}
+  ]
+}
